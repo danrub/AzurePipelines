@@ -14,7 +14,7 @@ import { IAgentSpecificApi, AgentSpecificApi } from "./agentSpecific";
 import { IReleaseApi } from "vso-node-api/ReleaseApi";
 import { IRequestHandler } from "vso-node-api/interfaces/common/VsoBaseInterfaces";
 import * as webApi from "vso-node-api/WebApi";
-import fs  = require("fs");
+import fs = require("fs");
 import { ResourceRef } from "vso-node-api/interfaces/common/VSSInterfaces";
 import { Build, Change } from "vso-node-api/interfaces/BuildInterfaces";
 import { IGitApi } from "vso-node-api/GitApi";
@@ -22,6 +22,7 @@ import { GitCommit } from "vso-node-api/interfaces/GitInterfaces";
 import { HttpClient } from "typed-rest-client/HttpClient";
 import { WorkItem } from "vso-node-api/interfaces/WorkItemTrackingInterfaces";
 import { type } from "os";
+import { renderUsingHandleBarEngine } from "./handlebars.engine";
 
 let agentApi = new AgentSpecificApi();
 
@@ -146,25 +147,37 @@ export function getCredentialHandler(): IRequestHandler {
 }
 
 export function getTemplate(
-        templateLocation: string,
-        templatefile: string ,
-        inlinetemplate: string
-    ): Array<string> {
-        agentApi.logDebug(`Using template mode ${templateLocation}`);
-        var template;
-        if (templateLocation === "File") {
-            agentApi.logInfo (`Loading template file ${templatefile}`);
+    templateLocation: string,
+    templatefile: string,
+    inlinetemplate: string
+): Array<string> {
+    agentApi.logDebug(`Using template mode ${templateLocation}`);
+    var template;
+    if (templateLocation === "File") {
+        agentApi.logInfo(`Loading template file ${templatefile}`);
         template = fs.readFileSync(templatefile).toString().split("\n");
-        } else {
-            agentApi.logInfo ("Using in-line template");
-            // it appears as single line we need to split it out
-            template = inlinetemplate.split("\n");
-        }
-        return template;
+    } else {
+        agentApi.logInfo("Using in-line template");
+        // it appears as single line we need to split it out
+        template = inlinetemplate.split("\n");
+    }
+    return template;
+}
+
+export function processTemplate(template: string[], workItems: WorkItem[], commits: Change[], buildDetails: Build, releaseDetails: Release, compareReleaseDetails: Release, emptySetText: string, delimiter: string, fieldEquality: string): string {
+    const engine = tl.getInput("templateEngine");
+    const customHelpers = tl.getInput("handlebarCustomHelpers");
+    switch (engine) {
+        case "Handlebars":
+            return renderUsingHandleBarEngine(template, workItems, commits, buildDetails, releaseDetails, compareReleaseDetails, emptySetText, customHelpers);
+        case "Local":
+        default:
+            return renderUsingLocalTemplateEngine(template, workItems, commits, buildDetails, releaseDetails, compareReleaseDetails, emptySetText, delimiter, fieldEquality);
+    }
 }
 
 // The Argument compareReleaseDetails is used in the template processing.  Renaming or removing will break the templates
-export function processTemplate(template, workItems: WorkItem[], commits: Change[], buildDetails: Build, releaseDetails: Release, compareReleaseDetails: Release, emptySetText, delimiter, fieldEquality): string {
+export function renderUsingLocalTemplateEngine(template: string[], workItems: WorkItem[], commits: Change[], buildDetails: Build, releaseDetails: Release, compareReleaseDetails: Release, emptySetText, delimiter, fieldEquality): string {
 
     var widetail = undefined;
     var csdetail = undefined;
@@ -178,193 +191,193 @@ export function processTemplate(template, workItems: WorkItem[], commits: Change
         // create our work stack and initialise
         var modeStack = [];
 
-        addStackItem (null, modeStack, Mode.BODY, -1);
+        addStackItem(null, modeStack, Mode.BODY, -1);
 
         // process each line
         for (var index = 0; index < template.length; index++) {
-           agentApi.logDebug(`${addSpace(modeStack.length + 1)} Processing Line No: ${(index + 1)}`);
-           var line = template[index];
-           // agentApi.logDebug("Line: " + line);
-           // get the line mode (if any)
-           var mode = getMode(line);
-           var wiFilter = getModeTags(line, delimiter, fieldEquality);
+            agentApi.logDebug(`${addSpace(modeStack.length + 1)} Processing Line No: ${(index + 1)}`);
+            var line = template[index];
+            // agentApi.logDebug("Line: " + line);
+            // get the line mode (if any)
+            var mode = getMode(line);
+            var wiFilter = getModeTags(line, delimiter, fieldEquality);
 
-           if (mode !== Mode.BODY) {
-               // is there a mode block change
-              if (getMode(modeStack[modeStack.length - 1].BlockMode) === mode) {
-                  // this means we have reached the end of a block
-                  // need to work out if there are more items to process
-                  // or the end of the block
-                  var queue = modeStack[modeStack.length - 1].BlockQueue;
-                  if (queue.length > 0) {
-                      // get the mode items and initialise
-                      // the variables exposed to the template
-                      var item = queue.shift();
-                      // reset the index to process the block
-                      index = modeStack[modeStack.length - 1].Index;
-                      switch (mode) {
-                        case Mode.WI :
-                            agentApi.logDebug (`${addSpace(modeStack.length + 1)} Getting next workitem ${item.id}`);
-                            widetail = item; // should filter
-                            break;
-                        case Mode.CS :
-                            if (csdetail.type.toLowerCase() === "tfsgit") {
-                                // Git mode
-                                agentApi.logDebug (`${addSpace(modeStack.length + 1)} Getting next commit ${item.id}`);
-                            } else {
-                                // TFVC mode
-                                agentApi.logDebug (`${addSpace(modeStack.length + 1)} Getting next changeset ${item.id}`);
-                            }
-                             csdetail = item;
-                             break;
-                      } // end switch
-                  } else {
-                      // end of block and no more items, so exit the block
-                      var blockMode = modeStack.pop().BlockMode;
-                      agentApi.logDebug (`${addSpace(modeStack.length + 1)} Ending block ${blockMode}`);
-                  }
-              } else {
-                  // this a new block to add the stack
-                  // need to get the items to process and place them in a queue
-                  agentApi.logDebug (`${addSpace(modeStack.length + 1)} Starting block ${line}`);
-                  // set the index to jump back to
-                  lastBlockStartIndex = index;
-                  switch (mode) {
-                      case Mode.WI:
-                        // store the block and load the first item
-                        // Need to check if we are in tag mode
-                        var modeArray = [];
-                        if (wiFilter.tags.length > 0 || wiFilter.fields.length > 0) {
-                            widetail = undefined;
-                            var parts;
-                            var okToAdd;
-                            workItems.forEach(wi => {
-                                agentApi.logDebug (`${addSpace(modeStack.length + 2)} Checking WI ${wi.id} witht tags '${wi.fields["System.Tags"]}' against tags '${wiFilter.tags.sort().join("; ")}' and fields '${wiFilter.fields.sort().join("; ")}' using comparison filter '${wiFilter.modifier}'`);
-                                switch (wiFilter.modifier) {
-                                    case Modifier.All:
-                                        agentApi.logDebug (`${addSpace(modeStack.length + 4)} Using ALL filter`);
-                                        if (wiFilter.tags.length > 0) {
-                                            if ((wi.fields["System.Tags"] !== undefined) &&
-                                                (wi.fields["System.Tags"].toUpperCase() === wiFilter.tags.join("; ").toUpperCase())) {
-                                                agentApi.logDebug (`${addSpace(modeStack.length + 4)} Tags match, need to check fields`);
-                                                okToAdd = true;
-                                            } else {
-                                                agentApi.logDebug (`${addSpace(modeStack.length + 4)} Tags do not match, no need to check fields`);
-                                                okToAdd = false;
-                                            }
-                                        } else {
-                                            agentApi.logDebug (`${addSpace(modeStack.length + 4)} No tags in filter to match, need to check fields`);
-                                            okToAdd = true;
-                                        }
-                                        if (okToAdd && wiFilter.fields.length > 0) {
-                                            for (let field of wiFilter.fields) {
-                                                parts = field.split("=");
-                                                agentApi.logDebug (`${addSpace(modeStack.length + 4)} Comparing field '${parts[0]}' contents '${wi.fields[parts[0]]}' to '${parts[1]}'`);
-                                                if (wi.fields[parts[0]] !== parts[1]) {
-                                                    agentApi.logDebug (`${addSpace(modeStack.length + 4)} Field does not match`);
-                                                    okToAdd = false;
-                                                    break;
-                                                } else {
-                                                    agentApi.logDebug (`${addSpace(modeStack.length + 4)} Field matches`);
-                                                }
-                                            }
-                                        }
-                                        if (okToAdd) {
-                                            agentApi.logDebug (`${addSpace(modeStack.length + 4)} Adding WI ${wi.id} as all tags and fields match`);
-                                            modeArray.push(wi);
-                                        }
-                                        break;
-                                    case Modifier.ANY:
-                                        agentApi.logDebug (`${addSpace(modeStack.length + 4)} Using ANY filter`);
-                                        okToAdd = false;
-                                        if ((wi.fields["System.Tags"] !== undefined) && (wiFilter.tags.length > 0)) {
-                                            for (let tag of wiFilter.tags) {
-                                                agentApi.logDebug (`${addSpace(modeStack.length + 4)} Checking tag ${tag}`);
-                                                if (wi.fields["System.Tags"].toUpperCase().indexOf(tag.toUpperCase()) !== -1) {
-                                                    agentApi.logDebug (`${addSpace(modeStack.length + 4)} Found match on tag`);
-                                                    okToAdd = true;
-                                                    break;
-                                                } else {
-                                                    agentApi.logDebug (`${addSpace(modeStack.length + 4)} No match on tag`);
-                                                }
-                                            }
-                                        } else {
-                                            agentApi.logDebug (`${addSpace(modeStack.length + 4)} No tags to check, checking fields`);
-                                        }
-                                        if (okToAdd === false) {
-                                            for (let field of wiFilter.fields) {
-                                                parts = field.split("=");
-                                                agentApi.logDebug (`${addSpace(modeStack.length + 4)} Comparing field '${parts[0]}' contents '${wi.fields[parts[0]]}' to '${parts[1]}'`);
-                                                if (wi.fields[parts[0]] !== undefined && wi.fields[parts[0]] === parts[1]) {
-                                                    agentApi.logDebug (`${addSpace(modeStack.length + 4)} Found match on field`);
-                                                    okToAdd = true;
-                                                    break;
-                                                } else {
-                                                    agentApi.logDebug (`${addSpace(modeStack.length + 4)} No match on field`);
-                                                }
-                                            }
-                                        }
-                                        if (okToAdd) {
-                                            agentApi.logDebug (`${addSpace(modeStack.length + 4)} Adding WI ${wi.id} as at least one tag or field matches`);
-                                            modeArray.push(wi);
-                                        }
-                                        break;
-                                    default:
-                                        agentApi.logWarn (`${addSpace(modeStack.length + 4)} Invalid filter passed, skipping WI ${wi.id}`);
+            if (mode !== Mode.BODY) {
+                // is there a mode block change
+                if (getMode(modeStack[modeStack.length - 1].BlockMode) === mode) {
+                    // this means we have reached the end of a block
+                    // need to work out if there are more items to process
+                    // or the end of the block
+                    var queue = modeStack[modeStack.length - 1].BlockQueue;
+                    if (queue.length > 0) {
+                        // get the mode items and initialise
+                        // the variables exposed to the template
+                        var item = queue.shift();
+                        // reset the index to process the block
+                        index = modeStack[modeStack.length - 1].Index;
+                        switch (mode) {
+                            case Mode.WI:
+                                agentApi.logDebug(`${addSpace(modeStack.length + 1)} Getting next workitem ${item.id}`);
+                                widetail = item; // should filter
+                                break;
+                            case Mode.CS:
+                                if (csdetail.type.toLowerCase() === "tfsgit") {
+                                    // Git mode
+                                    agentApi.logDebug(`${addSpace(modeStack.length + 1)} Getting next commit ${item.id}`);
+                                } else {
+                                    // TFVC mode
+                                    agentApi.logDebug(`${addSpace(modeStack.length + 1)} Getting next changeset ${item.id}`);
                                 }
-                            });
-                        } else {
-                            agentApi.logDebug (`${addSpace(modeStack.length + 4)} Adding all WI as no tag or fields filter`);
-                            modeArray = workItems;
-                        }
-                        agentApi.logDebug (`${addSpace(modeStack.length + 1)} There are ${modeArray.length} WI to add`);
-                        addStackItem (modeArray, modeStack, line, index);
-                        // now we have stack item we can get the first item
-                        if (modeStack[modeStack.length - 1].BlockQueue.length > 0) {
-                            widetail = modeStack[modeStack.length - 1].BlockQueue.shift();
-                            agentApi.logDebug (`${addSpace(modeStack.length + 1)} Getting first workitem ${widetail.id}`);
-                        } else {
-                            widetail = undefined;
-                        }
-                        break;
-                      case Mode.CS:
-                        // store the block and load the first item
-                        addStackItem (commits, modeStack, line, index);
-                        // now we have stack item we can get the first item
-                        if (modeStack[modeStack.length - 1].BlockQueue.length > 0) {
-                             csdetail = modeStack[modeStack.length - 1].BlockQueue.shift();
-                             if (csdetail.type.toLowerCase() === "tfsgit") {
-                                // Git mode
-                                agentApi.logDebug (`${addSpace(modeStack.length + 1)} Getting first commit ${csdetail.id}`);
-                             } else {
-                                // TFVC mode
-                                agentApi.logDebug (`${addSpace(modeStack.length + 1)} Getting first changeset ${csdetail.id}`);
-                             }
-                        } else {
-                              csdetail = undefined;
-                        }
-                         break;
+                                csdetail = item;
+                                break;
+                        } // end switch
+                    } else {
+                        // end of block and no more items, so exit the block
+                        var blockMode = modeStack.pop().BlockMode;
+                        agentApi.logDebug(`${addSpace(modeStack.length + 1)} Ending block ${blockMode}`);
+                    }
+                } else {
+                    // this a new block to add the stack
+                    // need to get the items to process and place them in a queue
+                    agentApi.logDebug(`${addSpace(modeStack.length + 1)} Starting block ${line}`);
+                    // set the index to jump back to
+                    lastBlockStartIndex = index;
+                    switch (mode) {
+                        case Mode.WI:
+                            // store the block and load the first item
+                            // Need to check if we are in tag mode
+                            var modeArray = [];
+                            if (wiFilter.tags.length > 0 || wiFilter.fields.length > 0) {
+                                widetail = undefined;
+                                var parts;
+                                var okToAdd;
+                                workItems.forEach(wi => {
+                                    agentApi.logDebug(`${addSpace(modeStack.length + 2)} Checking WI ${wi.id} witht tags '${wi.fields["System.Tags"]}' against tags '${wiFilter.tags.sort().join("; ")}' and fields '${wiFilter.fields.sort().join("; ")}' using comparison filter '${wiFilter.modifier}'`);
+                                    switch (wiFilter.modifier) {
+                                        case Modifier.All:
+                                            agentApi.logDebug(`${addSpace(modeStack.length + 4)} Using ALL filter`);
+                                            if (wiFilter.tags.length > 0) {
+                                                if ((wi.fields["System.Tags"] !== undefined) &&
+                                                    (wi.fields["System.Tags"].toUpperCase() === wiFilter.tags.join("; ").toUpperCase())) {
+                                                    agentApi.logDebug(`${addSpace(modeStack.length + 4)} Tags match, need to check fields`);
+                                                    okToAdd = true;
+                                                } else {
+                                                    agentApi.logDebug(`${addSpace(modeStack.length + 4)} Tags do not match, no need to check fields`);
+                                                    okToAdd = false;
+                                                }
+                                            } else {
+                                                agentApi.logDebug(`${addSpace(modeStack.length + 4)} No tags in filter to match, need to check fields`);
+                                                okToAdd = true;
+                                            }
+                                            if (okToAdd && wiFilter.fields.length > 0) {
+                                                for (let field of wiFilter.fields) {
+                                                    parts = field.split("=");
+                                                    agentApi.logDebug(`${addSpace(modeStack.length + 4)} Comparing field '${parts[0]}' contents '${wi.fields[parts[0]]}' to '${parts[1]}'`);
+                                                    if (wi.fields[parts[0]] !== parts[1]) {
+                                                        agentApi.logDebug(`${addSpace(modeStack.length + 4)} Field does not match`);
+                                                        okToAdd = false;
+                                                        break;
+                                                    } else {
+                                                        agentApi.logDebug(`${addSpace(modeStack.length + 4)} Field matches`);
+                                                    }
+                                                }
+                                            }
+                                            if (okToAdd) {
+                                                agentApi.logDebug(`${addSpace(modeStack.length + 4)} Adding WI ${wi.id} as all tags and fields match`);
+                                                modeArray.push(wi);
+                                            }
+                                            break;
+                                        case Modifier.ANY:
+                                            agentApi.logDebug(`${addSpace(modeStack.length + 4)} Using ANY filter`);
+                                            okToAdd = false;
+                                            if ((wi.fields["System.Tags"] !== undefined) && (wiFilter.tags.length > 0)) {
+                                                for (let tag of wiFilter.tags) {
+                                                    agentApi.logDebug(`${addSpace(modeStack.length + 4)} Checking tag ${tag}`);
+                                                    if (wi.fields["System.Tags"].toUpperCase().indexOf(tag.toUpperCase()) !== -1) {
+                                                        agentApi.logDebug(`${addSpace(modeStack.length + 4)} Found match on tag`);
+                                                        okToAdd = true;
+                                                        break;
+                                                    } else {
+                                                        agentApi.logDebug(`${addSpace(modeStack.length + 4)} No match on tag`);
+                                                    }
+                                                }
+                                            } else {
+                                                agentApi.logDebug(`${addSpace(modeStack.length + 4)} No tags to check, checking fields`);
+                                            }
+                                            if (okToAdd === false) {
+                                                for (let field of wiFilter.fields) {
+                                                    parts = field.split("=");
+                                                    agentApi.logDebug(`${addSpace(modeStack.length + 4)} Comparing field '${parts[0]}' contents '${wi.fields[parts[0]]}' to '${parts[1]}'`);
+                                                    if (wi.fields[parts[0]] !== undefined && wi.fields[parts[0]] === parts[1]) {
+                                                        agentApi.logDebug(`${addSpace(modeStack.length + 4)} Found match on field`);
+                                                        okToAdd = true;
+                                                        break;
+                                                    } else {
+                                                        agentApi.logDebug(`${addSpace(modeStack.length + 4)} No match on field`);
+                                                    }
+                                                }
+                                            }
+                                            if (okToAdd) {
+                                                agentApi.logDebug(`${addSpace(modeStack.length + 4)} Adding WI ${wi.id} as at least one tag or field matches`);
+                                                modeArray.push(wi);
+                                            }
+                                            break;
+                                        default:
+                                            agentApi.logWarn(`${addSpace(modeStack.length + 4)} Invalid filter passed, skipping WI ${wi.id}`);
+                                    }
+                                });
+                            } else {
+                                agentApi.logDebug(`${addSpace(modeStack.length + 4)} Adding all WI as no tag or fields filter`);
+                                modeArray = workItems;
+                            }
+                            agentApi.logDebug(`${addSpace(modeStack.length + 1)} There are ${modeArray.length} WI to add`);
+                            addStackItem(modeArray, modeStack, line, index);
+                            // now we have stack item we can get the first item
+                            if (modeStack[modeStack.length - 1].BlockQueue.length > 0) {
+                                widetail = modeStack[modeStack.length - 1].BlockQueue.shift();
+                                agentApi.logDebug(`${addSpace(modeStack.length + 1)} Getting first workitem ${widetail.id}`);
+                            } else {
+                                widetail = undefined;
+                            }
+                            break;
+                        case Mode.CS:
+                            // store the block and load the first item
+                            addStackItem(commits, modeStack, line, index);
+                            // now we have stack item we can get the first item
+                            if (modeStack[modeStack.length - 1].BlockQueue.length > 0) {
+                                csdetail = modeStack[modeStack.length - 1].BlockQueue.shift();
+                                if (csdetail.type.toLowerCase() === "tfsgit") {
+                                    // Git mode
+                                    agentApi.logDebug(`${addSpace(modeStack.length + 1)} Getting first commit ${csdetail.id}`);
+                                } else {
+                                    // TFVC mode
+                                    agentApi.logDebug(`${addSpace(modeStack.length + 1)} Getting first changeset ${csdetail.id}`);
+                                }
+                            } else {
+                                csdetail = undefined;
+                            }
+                            break;
                     } // end switch
                 }
             } else {
                 // agentApi.logDebug(`${addSpace(modeStack.length + 1)} Mode != BODY`);
-                if ( line.trim().length === 0) {
+                if (line.trim().length === 0) {
                     // we have a blank line, we can't eval this
                     agentApi.logDebug(`${addSpace(modeStack.length + 1)} Outputing a blank line`);
                     output += "\n";
                 } else {
                     if (((getMode(modeStack[modeStack.length - 1].BlockMode) === Mode.WI) && (widetail === undefined)) ||
-                       ((getMode(modeStack[modeStack.length - 1].BlockMode) === Mode.CS) && (csdetail === undefined))) {
+                        ((getMode(modeStack[modeStack.length - 1].BlockMode) === Mode.CS) && (csdetail === undefined))) {
                         // # there is no data to expand
                         agentApi.logDebug(`${addSpace(modeStack.length + 1)} No WI or CS so outputing emptySetText`);
                         output += emptySetText;
                     } else {
                         agentApi.logDebug(`${addSpace(modeStack.length + 1)} Nothing to expand, just process the line`);
                         // nothing to expand just process the line
-                        var fixedline = fixline (line);
+                        var fixedline = fixline(line);
                         var processedLine = eval(fixedline);
                         var lines = processedLine.split("\r\n");
-                        for ( var i = 0; i < lines.length; i ++) {
+                        for (var i = 0; i < lines.length; i++) {
                             output += lines[i];
                         }
                     }
@@ -373,9 +386,9 @@ export function processTemplate(template, workItems: WorkItem[], commits: Change
                 }
             }
         }  // loop
-        agentApi.logInfo( "Completed processing template");
+        agentApi.logInfo("Completed processing template");
     } else {
-        agentApi.logError( `Cannot load template file [${template}] or it is empty`);
+        agentApi.logError(`Cannot load template file [${template}] or it is empty`);
     }  // if no template
 
     return output;
@@ -389,14 +402,14 @@ export function writeFile(filename: string, data: string) {
 
 // There is no WI in this list as they are dynamic as they can include tags
 export const Mode = {
-     BODY : "BODY",
-     CS : "CS",
-     WI : "WI"
+    BODY: "BODY",
+    CS: "CS",
+    WI: "WI"
 };
 
 export const Modifier = {
-    All : "ALL",
-    ANY : "ANY"
+    All: "ALL",
+    ANY: "ANY"
 };
 
 export class WiFilter {
@@ -405,28 +418,28 @@ export class WiFilter {
     fields;
 }
 
-export function getMode (line): string {
-     var mode = Mode.BODY;
-     if (line !== undefined ) {
+export function getMode(line): string {
+    var mode = Mode.BODY;
+    if (line !== undefined) {
         line = line.trim().toUpperCase();
         if (line.startsWith("@@WILOOP") && line.endsWith("@@")) {
             mode = Mode.WI;
         }
         if (line.startsWith("@@CSLOOP@@") &&
-            line.endsWith("@@") ) {
+            line.endsWith("@@")) {
             mode = Mode.CS;
         }
     }
     return mode;
 }
 
-export function getModeTags (line, tagDelimiter, fieldEquivalent): WiFilter {
+export function getModeTags(line, tagDelimiter, fieldEquivalent): WiFilter {
     line = line.trim();
     var filter = new WiFilter();
     filter.modifier = Modifier.All;
     filter.tags = [];
     filter.fields = [];
-    if (line.startsWith("@@") && line.endsWith("@@") ) {
+    if (line.startsWith("@@") && line.endsWith("@@")) {
         line = line.replace(/@@/g, ""); // have to use regex form of replace else only first replaced
         var match = line.match(/(\[.*?\])/g);
         if (match !== null && match.toString().toUpperCase() === "[ANY]") {
@@ -436,7 +449,7 @@ export function getModeTags (line, tagDelimiter, fieldEquivalent): WiFilter {
         if (parts.length > 1) {
             parts.splice(0, 1); // return the tags
             parts.forEach(part => {
-                if (part.indexOf(fieldEquivalent) !== -1 ) {
+                if (part.indexOf(fieldEquivalent) !== -1) {
                     filter.fields.push(part.replace(fieldEquivalent, "="));
                 } else {
                     filter.tags.push(part.toUpperCase());
@@ -447,12 +460,12 @@ export function getModeTags (line, tagDelimiter, fieldEquivalent): WiFilter {
     return filter;
 }
 
-function addStackItem (
-        items,
-        modeStack,
-        blockMode,
-        index
-    ) {
+function addStackItem(
+    items,
+    modeStack,
+    blockMode,
+    index
+) {
     // Create a queue of the items
     var queue = [];
     // add each item to the queue if we have any
@@ -462,24 +475,24 @@ function addStackItem (
         }
     }
 
-    agentApi.logDebug (`${addSpace(modeStack.length + 1)} Added ${queue.length} items to queue for ${blockMode}`);
+    agentApi.logDebug(`${addSpace(modeStack.length + 1)} Added ${queue.length} items to queue for ${blockMode}`);
     // place it on the stack with the blocks mode and start line index
-    modeStack.push({"BlockMode": blockMode.trim(), "BlockQueue": queue, "Index": index});
+    modeStack.push({ "BlockMode": blockMode.trim(), "BlockQueue": queue, "Index": index });
 }
 
-export function addSpace (indent): string {
+export function addSpace(indent): string {
     var size = 3;
     var upperBound = size * indent;
     var padding = "";
-    for (var i = 1 ; i < upperBound  ; i++) {
+    for (var i = 1; i < upperBound; i++) {
         padding += " ";
     }
     return padding;
 }
 
 // Take a template line and convert it to something we can eval
-export function fixline (line: string ): string {
+export function fixline(line: string): string {
     // we can't use simple string replace as it only replaces the first instance
     // could use the regex form but think this is easier to read in the future
-    return  "\"" + line.trim().split("${").join("\" + ").split("}").join(" + \"") + "\"";
+    return "\"" + line.trim().split("${").join("\" + ").split("}").join(" + \"") + "\"";
 }
