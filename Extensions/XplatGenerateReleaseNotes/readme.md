@@ -139,3 +139,21 @@ When using this task within a build then it is sensible to place the release not
 However, within a release there are no such artifacts location. Hence, it is recommended that a task such as the [WIKI Updater](https://marketplace.visualstudio.com/items?itemName=richardfennellBM.BM-VSTS-WIKIUpdater-Tasks) is used to upload the resultant file to a WIKI. Though there are other options such as store the file on a UNC share, in an Azure DevOps Artifact or sent as an email.
 
 
+
+
+This PR Adding support for handlebars template engine
+
+This will provide for more advanced users to generate complex release notes templates that require conditions and complex manipulation during template build
+
+for example, with new engine we the task can now exclude specific work item from a rendering or apply complex filter conditions and whole work items array and it will look something like this
+
+```
+ ### Bugs ###
+{{#filter widetail "this.fields['System.WorkItemType'] === 'Bug'" }}
+{{#if (or (eq id 34) (startsWith (looup fields 'System.Title') 'Feature'))}}
+* **{{lookup fields 'System.WorkItemType'}}** {{lookup fields 'System.Title'}} (#{{id}})
+{{/if}}
+{{else}}
+     {{emptySetText}}
+{{/filter}}
+```
