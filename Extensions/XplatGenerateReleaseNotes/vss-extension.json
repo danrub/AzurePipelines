@@ -1,38 +1,36 @@
 {
- "manifestVersion": 1,
- "id": "BM-VSTS-XplatGenerateReleaseNotes",
- "version": "2.0.0",
- "name": "Generate Release Notes (Crossplatform)",
- "publisher": "richardfennellBM",
+  "manifestVersion": 1,
+  "id": "BM-VSTS-XplatGenerateReleaseNotes",
+  "version": "2.0.2",
+  "name": "Generate Release Notes (Crossplatform)",
+  "publisher": "allyable",
   "description": "Generates a Markdown Release notes file.",
   "CustomerQnASupport": {
-    "enableqna":"true",
+    "enableqna": "true",
     "url": "https://github.com/rfennell/AzurePipelines/issues"
-  }, 
- "categories": [
-    "Build and release"
+  },
+  "categories": [
+    "Azure Pipelines"
   ],
-  "galleryFlags": [
-        "Public"
-    ],
+  "galleryFlags": [],
   "targets": [
-         {
-             "id": "Microsoft.VisualStudio.Services"
-         }
-     ],
+    {
+      "id": "Microsoft.VisualStudio.Services"
+    }
+  ],
   "tags": [
     "Release",
     "Package",
     "Publish"
-  ],   
+  ],
   "branding": {
-        "color": "#f97923",
-        "theme": "dark"
+    "color": "#f97923",
+    "theme": "dark"
   },
   "icons": {
-      "default": "images/logo.png"
+    "default": "images/logo.png"
   },
-   "links": {
+  "links": {
     "getstarted": {
       "uri": "https://github.com/rfennell/vNextBuild/wiki/XplatGenerateReleaseNotes"
     },
